@@ -235,7 +235,7 @@ def label_from_rule_based(df, rsi_buy=30, rsi_sell=70):
     return label
 
 
-def label_from_future_returns(df, horizon=5, buy_thr=0.03, sell_thr=-0.03):
+def label_from_future_returns(df, horizon=60, buy_thr=0.03, sell_thr=-0.03):
     fut_ret = df["Close"].shift(-horizon) / df["Close"] - 1.0
     label = pd.Series(0, index=df.index, dtype=int)
     label[fut_ret >= buy_thr] = 1
@@ -243,10 +243,12 @@ def label_from_future_returns(df, horizon=5, buy_thr=0.03, sell_thr=-0.03):
     return label
 
 
+
+
 def build_ml_dataset_for_tickers(
     tickers, sma_windows, support_window,
     label_mode="rule",  # "rule" or "future"
-    horizon=5, buy_thr=0.03, sell_thr=-0.03,
+    horizon=60, buy_thr=0.03, sell_thr=-0.03,
     rsi_buy=30, rsi_sell=70,
     min_rows=250
 ):
@@ -357,13 +359,13 @@ with st.sidebar:
         rsi_sell_lbl = st.slider("RSI Sell Threshold", 50, 95, 70)
         rsi_buy = rsi_buy_lbl
         rsi_sell = rsi_sell_lbl
-        ml_horizon, ml_buy_thr, ml_sell_thr = 5, 0.03, -0.03
+        ml_horizon, ml_buy_thr, ml_sell_thr = 60, 0.03, -0.03
     else:
         st.subheader("Rule thresholds (for live rule signals only)")
         rsi_buy = st.slider("RSI Buy Threshold", 5, 50, 30)
         rsi_sell = st.slider("RSI Sell Threshold", 50, 95, 70)
         st.subheader("ML labeling (future return)")
-        ml_horizon = st.number_input("Horizon (days ahead)", 2, 20, 5)
+        ml_horizon = st.number_input("Horizon (days ahead)", 2, 60, 5)
         ml_buy_thr = st.number_input("Buy threshold (e.g., 0.03 = +3%)", 0.005, 0.20, 0.03, step=0.005, format="%.3f")
         ml_sell_thr = st.number_input("Sell threshold (e.g., -0.03 = -3%)", -0.20, -0.005, -0.03, step=0.005, format="%.3f")
 
@@ -500,3 +502,4 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
