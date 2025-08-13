@@ -14,7 +14,11 @@ try:
 except Exception:
     SKLEARN_OK = False
 
+
 # ---------------- CONFIG ----------------
+st.set_page_config(page_title="Nifty500 Buy/Sell Predictor", layout="wide")
+st.title("📊 Nifty500 Buy/Sell Predictor — Rules vs ML")
+
 NIFTY500_TICKERS = [
     "360ONE.NS","3MINDIA.NS","ABB.NS","ACC.NS","ACMESOLAR.NS","AIAENG.NS","APLAPOLLO.NS","AUBANK.NS","AWL.NS","AADHARHFC.NS",
     "AARTIIND.NS","AAVAS.NS","ABBOTINDIA.NS","ACE.NS","ADANIENSOL.NS","ADANIENT.NS","ADANIGREEN.NS","ADANIPORTS.NS","ADANIPOWER.NS","ATGL.NS",
@@ -69,18 +73,39 @@ NIFTY500_TICKERS = [
     "ECLERX.NS",
 ]
 
+
 # ---------------- HELPERS ----------------
 @st.cache_data(show_spinner=False)
 def download_data_multi(tickers, period="2y", interval="1d"):
-    try:
-        return yf.download(tickers, period=period, interval=interval, group_by="ticker", progress=False)
-    except Exception:
+    """Batch download to be kinder to Yahoo and reduce failures."""
+    if isinstance(tickers, str):
+        tickers = [tickers]
+    frames = []
+    batch_size = 50  # chunks to avoid request overload
+    for i in stqdm(range(0, len(tickers), batch_size), desc="Downloading", total=len(tickers)//batch_size + 1):
+        batch = tickers[i:i+batch_size]
+        try:
+            df = yf.download(batch, period=period, interval=interval, group_by="ticker", progress=False, threads=True)
+            if df is not None and not df.empty:
+                frames.append(df)
+        except Exception:
+            pass
+    if not frames:
         return None
+    # merge along columns (MultiIndex preserved)
+    out = pd.concat(frames, axis=1)
+    # de-duplicate top-level tickers if concat overlapped
+    if isinstance(out.columns, pd.MultiIndex):
+        idx = pd.MultiIndex.from_tuples(list(dict.fromkeys(out.columns.tolist())))
+        out = out.loc[:, idx]
+    return out
+
 
 def compute_features(df, sma_windows=(20, 50, 200), support_window=30):
-    # Flatten MultiIndex if needed
+    # Flatten MultiIndex if needed (for single-ticker computations downstream)
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+
     if "Close" not in df.columns or df["Close"].dropna().empty:
         return pd.DataFrame()
 
@@ -119,6 +144,7 @@ def compute_features(df, sma_windows=(20, 50, 200), support_window=30):
 
     return df
 
+
 def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_window):
     df = compute_features(ticker_df, sma_windows, support_window).dropna()
     if df.empty:
@@ -134,10 +160,12 @@ def get_latest_features_for_ticker(ticker_df, ticker, sma_windows, support_windo
         "Bearish_Div": bool(latest["Bearish_Div"]),
     }
 
+
 def get_features_for_all(tickers, sma_windows, support_window):
     multi_df = download_data_multi(tickers)
     if multi_df is None or multi_df.empty:
         return pd.DataFrame()
+
     features_list = []
     if isinstance(multi_df.columns, pd.MultiIndex):
         available = multi_df.columns.get_level_values(0).unique()
@@ -156,13 +184,9 @@ def get_features_for_all(tickers, sma_windows, support_window):
             features_list.append(feats)
     return pd.DataFrame(features_list)
 
+
 # ---------------- RULE-BASED STRATEGY ----------------
 def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
-    """
-    Produces boolean columns:
-      - Buy_Point: True when our buy conditions are met
-      - Sell_Point: True when our sell conditions are met
-    """
     if df.empty:
         return df
     results = df.copy()
@@ -183,26 +207,25 @@ def predict_buy_sell_rule(df, rsi_buy=30, rsi_sell=70):
         (results["RSI"] > 50)
     )
 
-    # Final Buy Point (ANY of the buy logics)
-    results["Sell_Point"] = results["Reversal_Buy"] | results["Trend_Buy"]
-
-    # Sell logic
+    # Final signal columns (note: here Buy_Point/Sell_Point naming mimics your earlier code)
+    results["Sell_Point"] = results["Reversal_Buy"] | results["Trend_Buy"]  # <- BUY signal
     results["Buy_Point"] = (
         ((results["RSI"] > rsi_sell) & (results["Bearish_Div"])) |
         (results["Close"] < results["Support"]) |
         ((results["SMA20"] < results["SMA50"]) & (results["SMA50"] < results["SMA200"]))
     )
-
     return results
+
 
 # ---------------- ML PIPELINE ----------------
 @st.cache_data(show_spinner=False)
 def load_history_for_ticker(ticker, period="5y", interval="1d"):
     try:
-        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        df = yf.download(ticker, period=period, interval=interval, progress=False, threads=True)
         return df
     except Exception:
         return pd.DataFrame()
+
 
 def label_from_rule_based(df, rsi_buy=30, rsi_sell=70):
     rules = predict_buy_sell_rule(df, rsi_buy=rsi_buy, rsi_sell=rsi_sell)
@@ -211,12 +234,14 @@ def label_from_rule_based(df, rsi_buy=30, rsi_sell=70):
     label[rules["Sell_Point"]] = -1                     # -1 = Sell
     return label
 
+
 def label_from_future_returns(df, horizon=5, buy_thr=0.03, sell_thr=-0.03):
     fut_ret = df["Close"].shift(-horizon) / df["Close"] - 1.0
     label = pd.Series(0, index=df.index, dtype=int)
     label[fut_ret >= buy_thr] = 1
     label[fut_ret <= sell_thr] = -1
     return label
+
 
 def build_ml_dataset_for_tickers(
     tickers, sma_windows, support_window,
@@ -228,7 +253,7 @@ def build_ml_dataset_for_tickers(
     X_list, y_list, meta_list = [], [], []
     feature_cols = None
 
-    for t in tickers:
+    for t in stqdm(tickers, desc="Preparing ML data"):
         hist = load_history_for_ticker(t, period="5y", interval="1d")
         if hist is None or hist.empty or len(hist) < min_rows:
             continue
@@ -241,13 +266,13 @@ def build_ml_dataset_for_tickers(
         if label_mode == "rule":
             y = label_from_rule_based(feat, rsi_buy=rsi_buy, rsi_sell=rsi_sell)
         else:
-            y = label_from_future_returns(feat, horizon=horizon, buy_thr=buy_thr, sell_thr=sell_thr)
+            y = label_from_future_returns(feat, horizon=horizon, buy_thr=buy_thr, sell_thr=ml_sell_thr)
 
         data = feat.join(y.rename("Label")).dropna()
         if data.empty:
             continue
 
-        # Build numeric feature set (avoid obvious leakage flags if desired)
+        # Numeric features (avoid obvious leakage flags if desired)
         drop_cols = set(["Label", "Support", "Bullish_Div", "Bearish_Div"])
         use = data.select_dtypes(include=[np.number]).drop(columns=list(drop_cols & set(data.columns)), errors="ignore")
 
@@ -265,6 +290,7 @@ def build_ml_dataset_for_tickers(
     y = pd.concat(y_list, axis=0)
     tickers_series = pd.concat(meta_list, axis=0)
     return X, y, feature_cols, tickers_series
+
 
 def train_rf_classifier(X, y, random_state=42):
     if X.empty or y.empty:
@@ -290,6 +316,7 @@ def train_rf_classifier(X, y, random_state=42):
     report = classification_report(y_test, y_pred, zero_division=0, output_dict=False)
     return clf, acc, report
 
+
 def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_cols):
     hist = load_history_for_ticker(ticker, period="3y", interval="1d")
     if hist is None or hist.empty:
@@ -305,20 +332,14 @@ def latest_feature_row_for_ticker(ticker, sma_windows, support_window, feature_c
     row = row[feature_cols]
     return row
 
-# ---------------- UI ----------------
-st.set_page_config(page_title="Nifty500 Buy/Sell Predictor", layout="wide")
-st.title("📊 Nifty500 Buy/Sell Predictor — Rules vs ML (Rule-Labeled)")
 
+# ---------------- UI ----------------
 with st.sidebar:
     st.header("Settings")
 
-    # --- Select All option ---
+    # Select all option for 500 tickers
     select_all = st.checkbox("Select all stocks", value=True)
-    if select_all:
-        default_list = NIFTY500_TICKERS
-    else:
-        default_list = NIFTY500_TICKERS[:5]
-
+    default_list = NIFTY500_TICKERS if select_all else NIFTY500_TICKERS[:25]
     selected_tickers = st.multiselect("Select stocks", NIFTY500_TICKERS, default=default_list)
 
     sma_w1 = st.number_input("SMA Window 1", 5, 250, 20)
@@ -327,7 +348,7 @@ with st.sidebar:
     support_window = st.number_input("Support Period (days)", 5, 90, 30)
 
     st.markdown("---")
-    # Labeling mode for ML (rule-based ML is default as requested)
+    # Labeling mode for ML
     label_mode = st.radio("ML Labeling Mode", ["Rule-based (teach the rules)", "Future Returns"], index=0)
 
     if label_mode == "Rule-based (teach the rules)":
@@ -348,6 +369,32 @@ with st.sidebar:
 
     run_analysis = st.button("Run Analysis")
 
+
+# Small progress helper without extra dependency
+class _TQDM:
+    def __init__(self, total, desc=""):
+        self.pb = st.progress(0, text=desc)
+        self.total = max(total, 1)
+        self.i = 0
+    def update(self):
+        self.i += 1
+        self.pb.progress(min(self.i / self.total, 1.0), text=f"{self.i}/{self.total}")
+    def close(self):
+        self.pb.empty()
+
+def stqdm(iterable, total=None, desc=""):
+    if total is None:
+        try:
+            total = len(iterable)
+        except Exception:
+            total = 100
+    bar = _TQDM(total=total, desc=desc)
+    for x in iterable:
+        yield x
+        bar.update()
+    bar.close()
+
+
 if run_analysis:
     sma_tuple = (sma_w1, sma_w2, sma_w3)
 
@@ -359,7 +406,12 @@ if run_analysis:
         else:
             preds_rule = predict_buy_sell_rule(feats, rsi_buy, rsi_sell)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["✅ Rule Buy", "❌ Rule Sell", "📈 Charts", "🤖 ML (trained on labels)"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "✅ Rule Buy (current snapshot)",
+        "❌ Rule Sell (current snapshot)",
+        "📈 Chart",
+        "🤖 ML Signals"
+    ])
 
     # -------- Rule-based tabs --------
     with tab1:
@@ -376,16 +428,16 @@ if run_analysis:
 
     with tab3:
         ticker_for_chart = st.selectbox("Chart Ticker", selected_tickers)
-        chart_df = yf.download(ticker_for_chart, period="6mo", interval="1d", progress=False)
+        chart_df = yf.download(ticker_for_chart, period="6mo", interval="1d", progress=False, threads=True)
         if not chart_df.empty:
-            chart_df = compute_features(chart_df, sma_tuple, support_window)
+            chart_df = compute_features(chart_df, sma_tuple, support_window).dropna()
             if not chart_df.empty:
                 st.line_chart(chart_df[["Close", f"SMA{sma_w1}", f"SMA{sma_w2}", f"SMA{sma_w3}"]])
                 st.line_chart(chart_df[["RSI"]])
         else:
             st.warning("No chart data available.")
 
-    # -------- ML tab: train on rule labels (or future returns, if selected) --------
+    # -------- ML tab: train on rule labels (default) or future returns --------
     with tab4:
         if not SKLEARN_OK:
             st.error("scikit-learn not available. Install with: pip install scikit-learn")
@@ -412,7 +464,7 @@ if run_analysis:
 
                     # Predict latest for each selected ticker
                     rows = []
-                    for t in selected_tickers:
+                    for t in stqdm(selected_tickers, desc="Scoring", total=len(selected_tickers)):
                         row = latest_feature_row_for_ticker(t, sma_tuple, support_window, feature_cols)
                         if row is None:
                             continue
@@ -429,17 +481,22 @@ if run_analysis:
                     if rows:
                         ml_df = pd.DataFrame(rows).sort_values(["ML_Pred","Prob_Buy"], ascending=[True, False])
                         st.dataframe(ml_df, use_container_width=True)
+                        st.download_button(
+                            "📥 Download ML Signals",
+                            ml_df.to_csv(index=False).encode(),
+                            "nifty500_ml_signals.csv",
+                            "text/csv",
+                        )
                     else:
                         st.info("Could not compute ML features for the selected tickers.")
 
-    # -------- Download --------
-    if 'preds_rule' in locals() and not preds_rule.empty:
+    # -------- Download rule snapshot --------
+    if 'preds_rule' in locals() and preds_rule is not None and not preds_rule.empty:
         st.download_button(
-            "📥 Download Rule-based Results",
+            "📥 Download Rule-based Results (snapshot)",
             preds_rule.to_csv(index=False).encode(),
             "nifty500_rule_signals.csv",
             "text/csv",
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
-
