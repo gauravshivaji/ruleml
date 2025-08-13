@@ -347,7 +347,7 @@ with st.sidebar:
     sma_w1 = st.number_input("SMA Window 1", 5, 250, 20)
     sma_w2 = st.number_input("SMA Window 2", 5, 250, 50)
     sma_w3 = st.number_input("SMA Window 3", 5, 250, 200)
-    support_window = st.number_input("Support Period (days)", 5, 90, 30)
+    support_window = st.number_input("Support Period (days)", 5, 200, 30)
 
     st.markdown("---")
     # Labeling mode for ML
@@ -502,4 +502,5 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
