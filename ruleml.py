@@ -487,7 +487,7 @@ if run_analysis:
 
                         ml_df['TradingView'] = ml_df['Ticker'].apply(make_tradingview_link)
 
-                        st.markdown( ml_df.to_html(escape=False, index=False),unsafe_allow_html=True  )
+                      
                   
                         st.download_button(
                             "📥 Download ML Signals",
@@ -508,6 +508,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 
