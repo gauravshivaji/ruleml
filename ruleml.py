@@ -482,7 +482,13 @@ if run_analysis:
 
                     if rows:
                         ml_df = pd.DataFrame(rows).sort_values(["ML_Pred","Prob_Buy"], ascending=[True, False])
-                        st.dataframe(ml_df, use_container_width=True)
+                        def make_tradingview_link(ticker):
+                            return f'<a href="https://www.tradingview.com/symbols/NSE-{ticker}/" target="_blank">TradingView</a>'
+
+                        ml_df['TradingView'] = ml_df['Ticker'].apply(make_tradingview_link)
+
+                        st.markdown( ml_df.to_html(escape=False, index=False),unsafe_allow_html=True  )
+                  
                         st.download_button(
                             "📥 Download ML Signals",
                             ml_df.to_csv(index=False).encode(),
@@ -502,6 +508,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 
