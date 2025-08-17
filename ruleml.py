@@ -480,21 +480,10 @@ if run_analysis:
                             "Prob_Sell": float(proba[list(clf.classes_).index(-1)]) if proba is not None and -1 in clf.classes_ else np.nan,
                         })
 
+                    
                     if rows:
                         ml_df = pd.DataFrame(rows).sort_values(["ML_Pred","Prob_Buy"], ascending=[True, False])
-                        def make_tradingview_link(ticker):
-                            return f'<a href="https://www.tradingview.com/symbols/NSE-{ticker}/" target="_blank">TradingView</a>'
-
-                        ml_df['TradingView'] = ml_df['Ticker'].apply(make_tradingview_link)
-
-                      
-                  
-                        st.download_button(
-                            "📥 Download ML Signals",
-                            ml_df.to_csv(index=False).encode(),
-                            "nifty500_ml_signals.csv",
-                            "text/csv",
-                        )
+                        st.dataframe(ml_df, use_container_width=True)
                     else:
                         st.info("Could not compute ML features for the selected tickers.")
 
@@ -508,6 +497,7 @@ if run_analysis:
         )
 
 st.markdown("⚠ Educational use only — not financial advice.")
+
 
 
 
